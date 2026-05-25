@@ -1,0 +1,130 @@
+FITARENA v6 — BUG FIXES
+=======================
+Applied to: fitarena_v5_fixed → fitarena_v6_fixed
+Date: 2026-05-24
+
+────────────────────────────────────────────────────────────
+BUG 1 — streakService.js status values don't match the DB
+FILE: src/services/streakService.js
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  getStreakMessage() used case "active" and case "new" as switch
+  labels, but the DB RPC get_user_streak_status returns the literal
+  strings 'active_today' and 'never'. Neither case ever matched,
+  so the function always fell through to the default branch and
+  returned the "start a streak" message even for active users.
+
+WHAT WAS CHANGED:
+  - Changed case "active"  → case "active_today"
+  - Changed case "new"     → case "never"
+  - Updated the JSDoc @param comment to list the correct DB values.
+  - All message strings kept exactly as-is.
+
+────────────────────────────────────────────────────────────
+BUG 2 — streakService.js is never imported or used anywhere
+FILES: src/hooks/useProfile.js, src/components/FitArena.jsx
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  streakService.js was created in v5 but nothing imported it.
+  The streak alert helpers and formatStreak were dead code.
+
+WHAT WAS CHANGED:
+  useProfile.js:
+    • Added import { isStreakAtRisk, isStreakBroken } from
+      "../services/streakService".
+    • Added a computeStreakAlert() pattern: after the real-time
+      UPDATE handler merges payload.new fields, it also computes
+      a streakAlert string ("💔 …broken" | "⚠️ …at risk" | null)
+      from payload.new.last_active and merges it into the profile.
+    • buildProfile() now also computes and attaches streakAlert
+      from data.last_active so it's present on initial page load.
+
+  FitArena.jsx:
+    • Added import { formatStreak } from "../services/streakService".
+    • In HomePage, added a conditional banner between the stats grid
+      and <AIQuote>: when profile.streakAlert is truthy, renders an
+      orange-bordered alert div with the message text.
+
+────────────────────────────────────────────────────────────
+BUG 3 — NEXT_PUBLIC_ prefix wrong for server-only env var
+FILES: src/app/api/ai/route.js, .env.example
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  process.env.NEXT_PUBLIC_RATE_LIMIT_DISABLED was used inside a
+  server-only API route. The NEXT_PUBLIC_ prefix causes Next.js to
+  inline the value into the browser bundle at build time, exposing
+  a server configuration flag to all users.
+
+WHAT WAS CHANGED:
+  route.js:
+    • Changed process.env.NEXT_PUBLIC_RATE_LIMIT_DISABLED
+      → process.env.RATE_LIMIT_DISABLED
+    • Updated the comment above it to reference the corrected name.
+
+  .env.example:
+    • Added the new variable with an explanatory comment noting it
+      is server-only and must NOT use the NEXT_PUBLIC_ prefix.
+      RATE_LIMIT_DISABLED=false
+
+────────────────────────────────────────────────────────────
+BUG 4 — Rewards re-redeemable after page refresh
+FILES: src/components/FitArena.jsx, src/supabase/schema.sql
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  redeemedIds was a plain useState(new Set()). On page refresh it
+  reset to empty, allowing users to redeem the same reward again
+  (points ARE deducted each time, so they repeatedly lose points
+  for the same reward). There was also no DB table to persist
+  redemptions across sessions.
+
+WHAT WAS CHANGED:
+  schema.sql (Part A):
+    • Appended a new 'public.redemptions' table with columns:
+      id, user_id, reward_id, redeemed_at, points_spent.
+    • Added unique(user_id, reward_id) constraint to prevent
+      duplicate redemptions at the DB level.
+    • Enabled RLS with policies for SELECT and INSERT (own rows only).
+
+  FitArena.jsx — ProfilePage (Part B):
+    • Added a useEffect([profile.id]) that fetches existing
+      redemptions from supabase on mount and seeds redeemedIds,
+      so previously redeemed rewards show "✅ Redeemed!" immediately
+      after a page refresh.
+    • In handleRedeem(), after a successful points deduction, also
+      inserts a row into public.redemptions. If the insert fails
+      with a unique-constraint error (reward already redeemed in
+      another session), shows "You have already redeemed this reward."
+      and still calls onProfileUpdated() to sync points.
+
+────────────────────────────────────────────────────────────
+BUG 5 — XPBar withinLevel can be negative (no floor guard)
+FILE: src/components/FitArena.jsx
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  withinLevel = xp - levelStart had no lower bound. A DB
+  inconsistency such as xp=0, level=2 would produce
+  withinLevel = -500, bar width = -100%, and label "-500 / 500 XP".
+
+WHAT WAS CHANGED:
+  Wrapped the calculation in Math.max(0, ...):
+    const withinLevel = Math.max(0, xp - levelStart);
+  The bar now shows 0% and "0 / 500 XP" instead of breaking.
+
+────────────────────────────────────────────────────────────
+BUG 6 — handleRedeem defined inside .map() (anti-pattern)
+FILE: src/components/FitArena.jsx
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  An async function handleRedeem() was declared inside the
+  REWARDS.map() callback. React creates a brand-new function
+  object for every item on every render, making the functions
+  non-stable references and complicating future memoisation.
+  It's also an ESLint error (no-inner-declarations).
+
+WHAT WAS CHANGED:
+  Extracted the logic into a single async function handleRedeem(r)
+  defined in the ProfilePage function body alongside openEdit,
+  handleSave, and handleKeyDown. The reward object is passed as
+  a parameter. Updated the button's onClick to:
+    onClick={() => handleRedeem(r)}
+  The map callback now contains only derived constants and JSX.

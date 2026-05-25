@@ -1,0 +1,212 @@
+FITARENA — PRODUCTION STREAK SYSTEM REBUILD
+============================================
+Date: 2026-05-23
+
+FILES CHANGED:
+  src/supabase/schema.sql              ← Updated (users table, RPCs, trigger, view)
+  src/supabase/streak_migration.sql    ← NEW (run this if you have an existing DB)
+  src/services/streakService.js        ← NEW (read-only streak utilities)
+  src/hooks/useProfile.js              ← Updated (longest_streak, last_active in profile)
+  src/components/FitArena.jsx          ← Updated (Best Streak card in profile page)
+
+═══════════════════════════════════════════════════════════════════════════════
+ROOT PROBLEM WITH OLD STREAK LOGIC
+═══════════════════════════════════════════════════════════════════════════════
+
+The original streak code in handle_submission_approved was technically present
+but had these critical production flaws:
+
+1. NO ROW LOCK — two concurrent approvals for the same user could both read
+   the same streak value and both increment it, awarding a double-increment.
+
+2. NO longest_streak — the DB schema had no column to track the all-time best
+   streak, so "best streak" could only be approximated by the frontend.
+
+3. update_user_streak RPC existed but was NEVER CALLED from the trigger —
+   the trigger inlined its own streak logic (without the lock). The RPC was
+   dead code, callable by the frontend which is a security hole.
+
+4. current_date vs UTC — using current_date in the trigger picks up the DB
+   server's local timezone, not UTC. Gyms in UTC+5:30 (India) could get
+   wrong date comparisons around midnight. Fixed to use (now() AT TIME ZONE
+   'utc')::date throughout.
+
+5. No return value / logging — impossible to know if the trigger chose
+   'increment', 'reset', or 'no_change' without instrumenting the DB.
+
+═══════════════════════════════════════════════════════════════════════════════
+WHAT CHANGED AND WHY
+═══════════════════════════════════════════════════════════════════════════════
+
+── src/supabase/schema.sql ──────────────────────────────────────────────────
+
+users table:
+  + longest_streak INTEGER NOT NULL DEFAULT 0
+    Tracks all-time best streak. Updated atomically by update_user_streak.
+
+leaderboard view:
+  + longest_streak column exposed (was missing)
+
+update_user_streak RPC (full rewrite):
+  BEFORE: simple read-then-write, no lock, no longest_streak, used current_date
+  AFTER:
+    • Uses (now() AT TIME ZONE 'utc')::date for correct UTC date everywhere
+    • Uses SELECT ... FOR UPDATE row lock → concurrent-safe, no double-increment
+    • Updates longest_streak = GREATEST(longest_streak, new_streak) atomically
+    • Returns 'no_change' | 'incremented' | 'reset' | 'first' for auditability
+    • Four cases explicitly handled:
+        CASE 1 (first ever):      last_active IS NULL     → streak = 1
+        CASE 2 (already today):   last_active = today     → no-op
+        CASE 3 (yesterday):       last_active = yesterday → streak + 1
+        CASE 4 (missed day(s)):   any other date          → streak = 1
+
+handle_submission_approved trigger (updated):
+  BEFORE: inlined streak logic directly (no lock, no longest_streak)
+  AFTER:
+    • Delegates streak update entirely to update_user_streak RPC
+    • RPC is called inside trigger (SECURITY DEFINER) → not callable standalone
+    • Logs result with RAISE LOG for Supabase log visibility
+    • All other logic (points, XP, level) unchanged
+
+get_user_streak_status RPC (NEW):
+  • Read-only RPC for UI to query streak state without exposing full users row
+  • Returns: current_streak, longest_streak, last_active, streak_status, checked_at
+  • streak_status ∈ { 'active_today', 'at_risk', 'broken', 'never' }
+  • Frontend uses this for informational display only — never to set streak
+
+── src/supabase/streak_migration.sql (NEW) ──────────────────────────────────
+
+  Run this in Supabase SQL Editor if you already have an existing database.
+  It safely:
+    • Adds longest_streak column (idempotent DO block)
+    • Backfills longest_streak = streak for existing users
+    • Replaces update_user_streak with production version
+    • Adds get_user_streak_status RPC
+    • Recreates handle_submission_approved trigger
+    • Recreates leaderboard view with longest_streak
+
+── src/services/streakService.js (NEW) ──────────────────────────────────────
+
+  Modular, pure utility functions for streak display:
+    getStreakStatus(userId)          — calls get_user_streak_status RPC
+    getStreakMessage(status, streak) — human string for streak state
+    isStreakCreditedToday(lastActive) — boolean: already counted today?
+    isStreakAtRisk(lastActive)        — boolean: at risk of breaking?
+    isStreakBroken(lastActive)        — boolean: already broken?
+    formatStreak(streak)              — "7 🔥" or "—"
+
+  These are READ-ONLY. The streak number is always read from Supabase.
+  No localStorage. No frontend incrementing.
+
+── src/hooks/useProfile.js ──────────────────────────────────────────────────
+
+  buildProfile():
+    + longest_streak: data.longest_streak ?? 0
+    + last_active:    data.last_active ?? null
+
+  Real-time UPDATE handler:
+    + longest_streak: payload.new.longest_streak ?? prev.longest_streak
+    + last_active:    payload.new.last_active ?? prev.last_active
+
+  Fallback profile:
+    + longest_streak: 0
+    + last_active:    null
+
+── src/components/FitArena.jsx ──────────────────────────────────────────────
+
+  ProfilePage stats grid:
+  BEFORE: 3-column grid: Points | Rank | Streak
+  AFTER:  Two 2-column grids:
+            Row 1: Points | Rank
+            Row 2: Current Streak 🔥 | Best Streak 🏆
+  
+  No other UI changes. Existing StreakFire component unchanged.
+  No QR flow, auth, or challenge logic touched.
+
+═══════════════════════════════════════════════════════════════════════════════
+STREAK ABUSE PREVENTION SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+Attack vector                   How it's blocked
+─────────────────────────────── ─────────────────────────────────────────────
+Frontend increments streak       Not possible — no frontend write path exists
+localStorage manipulation        Not used — Supabase is sole source of truth
+Multiple submissions same day    unique(user_id, challenge_id, submission_date)
+                                 + update_user_streak CASE 2 no-op
+Duplicate challenge spam         Unique partial index: one approved per user+challenge
+Page refresh / login             Trigger only fires on submissions status change
+Double-approval race condition   FOR UPDATE row lock in update_user_streak
+Admin approves own submission    JS + DB RLS both block self-approval
+Streak increment without approval Only path is trigger → status='approved' transition
+
+═══════════════════════════════════════════════════════════════════════════════
+DEPLOYMENT STEPS
+═══════════════════════════════════════════════════════════════════════════════
+
+NEW DATABASE:
+  1. Run src/supabase/schema.sql in full (includes all streak fixes)
+  2. Deploy updated JS files
+
+EXISTING DATABASE:
+  1. Run src/supabase/streak_migration.sql (safe, idempotent)
+  2. Deploy updated JS files
+
+VERIFY:
+  -- Check column exists:
+  SELECT column_name FROM information_schema.columns
+  WHERE table_name = 'users' AND column_name = 'longest_streak';
+
+  -- Check trigger exists:
+  SELECT trigger_name FROM information_schema.triggers
+  WHERE event_object_table = 'submissions'
+    AND trigger_name = 'on_submission_approved';
+
+  -- Test streak status for a user:
+  SELECT public.get_user_streak_status('<user-uuid>');
+
+═══════════════════════════════════════════════════════════════════════════════
+UNCHANGED
+═══════════════════════════════════════════════════════════════════════════════
+
+  src/services/submissionService.js   — untouched
+  src/services/challengeService.js    — untouched
+  src/services/authService.js         — untouched
+  src/services/userService.js         — untouched
+  src/hooks/useChallenges.js          — untouched
+  src/hooks/useAuth.js                — untouched
+  src/hooks/useLeaderboard.js         — untouched
+  src/app/                            — untouched (QR landing page, layout, etc.)
+  src/supabase/client.js              — untouched
+  Styling / theme / mobile layout     — untouched
+  QR generation, QR scanning flow     — untouched
+  Admin panel (challenge/approval UI) — untouched
+
+─────────────────────────────────────────────────────────────────────────────
+v12-28 — Critical Bug Fixes (4 issues)
+─────────────────────────────────────────────────────────────────────────────
+
+BUG 1 FIX — Leaderboard tabs showed identical data
+  Files: src/hooks/useLeaderboard.js, src/services/userService.js,
+         src/components/FitArena.jsx (LeaderboardPage)
+  - useLeaderboard() now accepts a `period` parameter passed from the tab state
+  - getLeaderboard() computes a `since` date and filters by `last_active`
+    (daily = today UTC, weekly = 7 days ago, monthly = 30 days ago)
+  - Removed the broken streak-count fake filter in LeaderboardPage
+
+BUG 2 FIX — getChallengeStats() scalability bomb (full-table fetch)
+  Files: src/services/challengeService.js, src/supabase/schema.sql
+  - Replaced full-table JS aggregation with a Postgres RPC get_challenge_stats()
+  - RPC uses MAX(score) + COUNT(DISTINCT user_id) GROUP BY challenge_id server-side
+  - Added get_challenge_stats() function to schema.sql with GRANT to authenticated
+
+BUG 3 FIX — QR deep-link useEffect stale closure on unlockChallenge
+  File: src/components/FitArena.jsx
+  - Wrapped unlockChallenge in useCallback([user]) for a stable function reference
+  - Added unlockChallenge to the QR deep-link useEffect dependency array
+  - Added useCallback to React imports
+
+BUG 4 FIX — RLS INSERT policy allowed unlock bypass for any challenge
+  File: src/supabase/schema.sql
+  - Replaced permissive INSERT policy with one that also checks the challenge
+    exists AND is currently active (active = true)
+  - Prevents users from inserting unlock records for deactivated/nonexistent challenges

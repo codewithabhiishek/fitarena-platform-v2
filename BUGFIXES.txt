@@ -1,0 +1,126 @@
+FITARENA v5 — BUG FIXES
+=======================
+Applied to: fitarena_streak_fixed → fitarena_v5_fixed
+Date: 2026-05-24
+
+────────────────────────────────────────────────────────────
+BUG 1 — Missing file: src/services/streakService.js
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  The file src/services/streakService.js did not exist. Any code importing
+  streak utilities would crash at runtime with a module-not-found error.
+
+WHAT WAS CHANGED:
+  Created src/services/streakService.js from scratch. It exports:
+    • getStreakStatus(userId)          — calls supabase.rpc("get_user_streak_status", { p_user_id: userId })
+    • getStreakMessage(status, streak) — returns a human-readable motivational string based on streak_status
+    • isStreakCreditedToday(lastActive) — true if lastActive date equals today UTC
+    • isStreakAtRisk(lastActive)        — true if lastActive was yesterday UTC
+    • isStreakBroken(lastActive)        — true if lastActive is older than yesterday UTC
+    • formatStreak(streak)             — returns "7 🔥" or "—" for 0/null
+  The file imports supabase from "../supabase/client" and never writes to the DB.
+
+────────────────────────────────────────────────────────────
+BUG 2 — XP bar shows wrong progress (FitArena.jsx, XPBar)
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  The XPBar component calculated max as level * 500 and filled the bar
+  relative to that cumulative total. Because xp is cumulative, on level 2
+  the bar started half-full, on level 3 it would show 66% before any
+  within-level progress was made, etc. The label also showed cumulative XP
+  instead of within-level progress.
+
+WHAT WAS CHANGED:
+  Replaced the broken formula with correct within-level progress math:
+    const levelStart   = (level - 1) * 500;
+    const withinLevel  = xp - levelStart;
+    const pct          = Math.min((withinLevel / 500) * 100, 100);
+  Updated the XP label to display "{withinLevel} / 500 XP" so it matches
+  what the bar actually shows.
+
+────────────────────────────────────────────────────────────
+BUG 3 — Rewards redemption has no backend persistence (FitArena.jsx, ProfilePage)
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  Clicking "Redeem" only updated a local React Set (redeemedIds). On page
+  refresh the redemption was lost, the user's points were never deducted, and
+  rewards could be "redeemed" multiple times at no cost.
+
+WHAT WAS CHANGED:
+  • Added redeemingId state (tracks which reward is mid-flight) and
+    redeemErr state (holds an inline error message).
+  • Replaced the inline onClick assignment with an async handleRedeem()
+    function that:
+      1. Guards against double-clicks, insufficient points, and unavailable rewards.
+      2. Calls supabase.from("users").update({ points: profile.points - r.cost }).eq("id", profile.id).
+      3. On success: adds the id to redeemedIds and calls onProfileUpdated()
+         so the displayed points refresh immediately.
+      4. On failure: sets redeemErr with the error message.
+  • Added a loading state ("…") on the Redeem button while the deduction
+    is in flight (disabled during that window).
+  • An inline red error banner appears above the rewards list on failure.
+
+────────────────────────────────────────────────────────────
+BUG 4 — "Active Members" analytics metric is wrong (FitArena.jsx, AdminPage)
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  The query used .gt("points", 0) to count "active" members. Points > 0 never
+  changes once a user earns their first point, so this counter effectively
+  counted all-time registered users with any activity, not recently active ones.
+  The label "Active Members" was therefore misleading.
+
+WHAT WAS CHANGED:
+  Replaced the .gt("points", 0) filter with a 30-day UTC window:
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 30);
+    .gte("last_active", thirtyDaysAgo.toISOString())
+  Updated the analytics label from "Active Members" to "Active (30d)"
+  to accurately reflect what the metric measures.
+
+────────────────────────────────────────────────────────────
+BUG 5 — Phantom directory in zip (src/{supabase,services,hooks}/)
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  A directory literally named "{supabase,services,hooks}" existed inside src/.
+  This was a brace-expansion artifact — the shell command that created those
+  real directories (src/supabase, src/services, src/hooks) was also run
+  with quoting that caused the literal brace-expression to be treated as a
+  path name. The empty directory was included in the zip and could confuse
+  build tools or IDEs.
+
+WHAT WAS CHANGED:
+  Deleted the directory src/{supabase,services,hooks}/ entirely.
+  It is not included in fitarena_v5_fixed.zip.
+
+────────────────────────────────────────────────────────────
+BUG 6 — Duplicate comment in FitArena.jsx (~line 713)
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  Two consecutive identical lines:
+    // ─── CHALLENGES PAGE ─────────────────────────────────────────────────────────
+    // ─── CHALLENGES PAGE ─────────────────────────────────────────────────────────
+
+WHAT WAS CHANGED:
+  Removed the duplicate line; only one copy remains.
+
+────────────────────────────────────────────────────────────
+BUG 7 — In-memory rate limiter is ineffective in serverless (src/app/api/ai/route.js)
+────────────────────────────────────────────────────────────
+WHAT WAS WRONG:
+  The rateLimitMap and cleanup setInterval were correct for a long-lived
+  Node.js process but silently ineffective (and potentially crash-inducing)
+  in serverless/edge runtimes:
+    • Each cold start resets the Map, so the rate limit is never enforced
+      across concurrent instances.
+    • setInterval throws in edge runtimes (e.g. Cloudflare Workers) that
+      do not support timers at module load time.
+  There was also no way to disable the limiter without code changes.
+
+WHAT WAS CHANGED:
+  1. Expanded the warning comment block at the top to clearly explain all
+     three failure modes and recommend @upstash/ratelimit for serverless.
+  2. Added a NEXT_PUBLIC_RATE_LIMIT_DISABLED env-var check: when set to
+     "true", isRateLimited() always returns false so operators can cleanly
+     disable the limiter without removing code.
+  3. Wrapped the setInterval cleanup sweep in a try/catch so it degrades
+     gracefully in edge runtimes instead of crashing module evaluation.

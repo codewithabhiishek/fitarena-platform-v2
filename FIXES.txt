@@ -1,0 +1,47 @@
+FITARENA — BUG FIXES
+====================
+Date: 2026-05-23
+
+FILES CHANGED:
+  next.config.js                   (Fix 1 — images.domains → remotePatterns)
+  src/components/FitArena.jsx      (Fix 2 — cols moved inside useEffect)
+
+═══════════════════════════════════════════════════════════════════════════════
+FIX 1 — next.config.js deprecated images.domains (Next.js 15)
+═══════════════════════════════════════════════════════════════════════════════
+
+PROBLEM:
+  images.domains was removed in Next.js 15 and causes a build warning/error.
+
+FIX:
+  Replaced images.domains with images.remotePatterns. Same two hostnames,
+  same effect — Next.js 15 compatible.
+
+  BEFORE:
+    images: { domains: ["johyvfmvsndbsyirysld.supabase.co", "lh3.googleusercontent.com"] }
+
+  AFTER:
+    images: { remotePatterns: [
+      { protocol: "https", hostname: "johyvfmvsndbsyirysld.supabase.co" },
+      { protocol: "https", hostname: "lh3.googleusercontent.com" },
+    ]}
+
+═══════════════════════════════════════════════════════════════════════════════
+FIX 2 — Confetti useEffect missing cols dependency warning
+═══════════════════════════════════════════════════════════════════════════════
+
+PROBLEM:
+  cols was declared outside the useEffect but referenced inside it. ESLint's
+  react-hooks/exhaustive-deps rule flags this — cols should be in the
+  dependency array, but adding it would cause the effect to re-run every
+  render (cols is recreated as a new array reference each time).
+
+FIX:
+  Moved the cols const declaration inside the useEffect body. It is now
+  local to the effect, has no external dependency, and the [] dep array
+  is correct with no lint warning.
+
+═══════════════════════════════════════════════════════════════════════════════
+UNCHANGED
+═══════════════════════════════════════════════════════════════════════════════
+  All other files untouched.
