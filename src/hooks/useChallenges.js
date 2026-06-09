@@ -31,7 +31,7 @@ export const CHALLENGE_META = {
   Attendance: { icon: "🎯", color: "#FFD700" },
 };
 
-export function useChallenges() {
+export function useChallenges(realtime = false) {
   const { user } = useAuth();
   const [challenges, setChallenges] = useState([]);
   const [loading, setLoading]       = useState(true);
@@ -75,23 +75,30 @@ export function useChallenges() {
   useEffect(() => {
     fetchChallenges();
 
-    // Re-fetch when challenges or submissions change
-    const unsubCh = subscribeToChallenges(() => fetchChallenges());
+    let unsubCh = () => {};
+    let subChannel = null;
 
-    const subChannel = supabase
-      .channel("submissions-for-challenges")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "submissions" },
-        () => fetchChallenges()
-      )
-      .subscribe();
+    if (realtime) {
+      // Re-fetch when challenges or submissions change
+      unsubCh = subscribeToChallenges(() => fetchChallenges());
+
+      subChannel = supabase
+        .channel("submissions-for-challenges")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "submissions" },
+          () => fetchChallenges()
+        )
+        .subscribe();
+    }
 
     return () => {
       unsubCh();
-      supabase.removeChannel(subChannel);
+      if (subChannel) {
+        supabase.removeChannel(subChannel);
+      }
     };
-  }, [fetchChallenges]);
+  }, [fetchChallenges, realtime]);
 
   return { challenges, loading, error, refetch: fetchChallenges };
 }

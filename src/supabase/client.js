@@ -16,9 +16,9 @@ import { createClient } from "@supabase/supabase-js";
 // A top-level throw crashes the entire JS bundle at evaluation time —
 // React error boundaries cannot catch it, leaving a blank white screen.
 // Using empty strings lets the app render a meaningful error state instead.
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co";
 
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error(

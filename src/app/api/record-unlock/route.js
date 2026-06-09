@@ -8,16 +8,16 @@ const TOKEN_PATTERN = /^[0-9a-f]{64}$/i;
 
 function userClient(jwt) {
   return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co",
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key",
     { global: { headers: { Authorization: `Bearer ${jwt}` } } }
   );
 }
 
 function serviceClient() {
   return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co",
+    process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key",
     { auth: { persistSession: false, autoRefreshToken: false } }
   );
 }

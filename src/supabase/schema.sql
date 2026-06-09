@@ -316,9 +316,14 @@ create or replace function public.handle_submission_approved()
 returns trigger language plpgsql security definer
 set search_path = public as $$
 declare
-  v_points        integer;
-  v_xp            integer;
-  v_streak_result text;
+  v_points         integer;
+  v_xp             integer;
+  v_streak_result  text;
+  v_badges         text[];
+  v_current_badges text[];
+  v_challenge_type text;
+  v_streak         integer;
+  v_level          integer;
 begin
   -- Only act on the pending → approved transition
   if (old.status is distinct from 'approved') and new.status = 'approved' then
@@ -346,8 +351,55 @@ begin
     -- Delegates all logic to update_user_streak which handles all 4 cases atomically.
     v_streak_result := public.update_user_streak(new.user_id);
 
-    raise log '[on_submission_approved] submission=% user=% points=% xp=% streak=%',
-      new.id, new.user_id, v_points, v_xp, v_streak_result;
+    -- Get updated stats to evaluate badges
+    select badges, streak, level into v_current_badges, v_streak, v_level
+    from public.users
+    where id = new.user_id;
+
+    v_badges := v_current_badges;
+
+    -- Get challenge type
+    select type into v_challenge_type
+    from public.challenges
+    where id = new.challenge_id;
+
+    -- 1. Pushup King
+    if v_challenge_type = 'Pushup' and new.score >= 50 and not ('pushup_king' = any(v_badges)) then
+      v_badges := array_append(v_badges, 'pushup_king');
+    end if;
+
+    -- 2. Deadlift Beast
+    if v_challenge_type = 'Deadlift' and new.score >= 150 and not ('deadlift_beast' = any(v_badges)) then
+      v_badges := array_append(v_badges, 'deadlift_beast');
+    end if;
+
+    -- 3. Squat Lord
+    if v_challenge_type = 'Squat' and new.score >= 100 and not ('squat_lord' = any(v_badges)) then
+      v_badges := array_append(v_badges, 'squat_lord');
+    end if;
+
+    -- 4. Plank God
+    if v_challenge_type = 'Plank' and new.score >= 180 and not ('plank_god' = any(v_badges)) then
+      v_badges := array_append(v_badges, 'plank_god');
+    end if;
+
+    -- 5. Consistency Monster
+    if v_streak >= 7 and not ('consistency_monster' = any(v_badges)) then
+      v_badges := array_append(v_badges, 'consistency_monster');
+    end if;
+
+    -- 6. Elite Member
+    if v_level >= 10 and not ('elite_member' = any(v_badges)) then
+      v_badges := array_append(v_badges, 'elite_member');
+    end if;
+
+    -- Save updated badges
+    update public.users
+    set badges = v_badges
+    where id = new.user_id;
+
+    raise log '[on_submission_approved] submission=% user=% points=% xp=% streak=% badges_count=%',
+      new.id, new.user_id, v_points, v_xp, v_streak_result, cardinality(v_badges);
 
   end if;
 

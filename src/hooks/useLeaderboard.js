@@ -20,7 +20,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getLeaderboard } from "../services/userService";
 import { supabase } from "../supabase/client";
 
-export function useLeaderboard(limit = 20, period = "all-time") {
+export function useLeaderboard(limit = 20, period = "all-time", realtime = false) {
   const [board, setBoard]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -33,8 +33,9 @@ export function useLeaderboard(limit = 20, period = "all-time") {
       const enriched = rows.map((u) => ({
         ...u,
         leaderboardPosition: Number(u.position),
-        initials: (u.name || "??")
+        initials: (u.name?.trim() || "??")
           .split(" ")
+          .filter(Boolean)
           .map((w) => w[0])
           .join("")
           .slice(0, 2)
@@ -62,10 +63,12 @@ export function useLeaderboard(limit = 20, period = "all-time") {
     fetchBoard();
   }, [fetchBoard]);
 
-  // Real-time subscription — runs ONCE, independent of tab/period changes.
+  // Real-time subscription — runs dynamically based on the realtime flag.
   // Uses fetchBoardRef so it always calls the latest fetchBoard without
   // tearing down and re-creating the channel on every tab switch.
   useEffect(() => {
+    if (!realtime) return;
+
     const usersChannel = supabase
       .channel("leaderboard-users-realtime")
       .on(
@@ -81,7 +84,7 @@ export function useLeaderboard(limit = 20, period = "all-time") {
     return () => {
       supabase.removeChannel(usersChannel);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [realtime]);
 
   return { board, loading, error, refetch: fetchBoard };
 }

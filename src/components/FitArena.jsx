@@ -306,6 +306,10 @@ function AuthPage() {
 
   async function handleEmail() {
     if (!email || !pw) return;
+    if (mode === "signup" && !name.trim()) {
+      setError("Name is required to sign up.");
+      return;
+    }
     if (mode === "signup" && pw.length < 6) {
       setError("Password must be at least 6 characters.");
       return;
@@ -576,8 +580,8 @@ function HomePage({ profile, challenges, onChallenge }) {
 // ─── LEADERBOARD ─────────────────────────────────────────────────────────────
 function LeaderboardPage({ profile }) {
   const [tab, setTab]   = useState("active this week");
-  const { board, loading, error } = useLeaderboard(20, tab);
   const [tvMode, setTv] = useState(false);
+  const { board, loading, error } = useLeaderboard(20, tab, tvMode);
   const rc={1:"#FFD700",2:"#C0C0C0",3:"#CD7F32"};
   const re={1:"🥇",2:"🥈",3:"🥉"};
 
@@ -864,6 +868,32 @@ function ProfilePage({ profile, onSignOut, onProfileUpdated }) {
     loadRedemptions();
   }, [profile.id]);
 
+  const [dbRewards, setDbRewards] = useState([]);
+  useEffect(() => {
+    let active = true;
+    const REWARD_ICONS = {
+      r1: "🥤",
+      r2: "🏅",
+      r3: "👕",
+      r4: "💎",
+    };
+    supabase
+      .from("rewards")
+      .select("*")
+      .then(({ data, error }) => {
+        if (active && !error && data && data.length > 0) {
+          setDbRewards(data.map(item => ({
+            ...item,
+            icon: REWARD_ICONS[item.id] || "🎁"
+          })));
+        }
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const displayRewards = dbRewards.length > 0 ? dbRewards : REWARDS;
+
   // Keep inputs in sync if the profile prop updates after a refetch
   useEffect(() => {
     if (!editing) {
@@ -1050,7 +1080,7 @@ function ProfilePage({ profile, onSignOut, onProfileUpdated }) {
           {redeemErr}
         </div>
       )}
-      {REWARDS.map(r=>{
+      {displayRewards.map(r=>{
         const canAfford = (profile.points||0) >= r.cost;
         const alreadyRedeemed = redeemedIds.has(r.id);
         const isRedeeming = redeemingId === r.id;
@@ -1572,7 +1602,7 @@ export default function FitArena() {
   const posthog = usePostHog();
   const { user, loading: authLoading, signOut } = useAuth();
   const { profile, refetch: refetchProfile } = useProfile();
-  const { challenges, loading: chLoading, refetch: refetchChallenges } = useChallenges();
+  const { challenges, loading: chLoading, refetch: refetchChallenges } = useChallenges(profile?.isAdmin);
 
   const [page, setPage]                   = useState("home");
   const [selectedChallenge, setChallenge] = useState(null);
@@ -1602,7 +1632,7 @@ export default function FitArena() {
         setUnlockedIds(new Set((data || []).map(row => row.challenge_id)));
       })
       .catch(() => setUnlockedIds(new Set()));
-  }, [user]);
+  }, [user, posthog]);
 
   const unlockChallenge = useCallback(async ({ challengeId, expiresAt, token }) => {
     setUnlockError(null);
@@ -1630,7 +1660,7 @@ export default function FitArena() {
       setUnlockError(err.message);
       return false;
     }
-  }, []);
+  }, [posthog]);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("fitarena_open_challenge");
