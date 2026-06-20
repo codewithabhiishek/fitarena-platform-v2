@@ -11,6 +11,9 @@ const barlow = Barlow({
 export const metadata = {
   title: "FitArena — Elite Gym Challenges",
   description: "Compete, earn badges, climb leaderboards at your gym.",
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 export const viewport = {
