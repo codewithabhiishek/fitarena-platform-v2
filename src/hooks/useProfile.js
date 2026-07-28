@@ -124,10 +124,12 @@ function buildProfile(data, user, position) {
   return {
     ...data,
     initials: deriveInitials(data.name || user.user_metadata?.full_name),
-    joinDate: new Date(data.created_at).toLocaleDateString("en-US", {
-      month: "short",
-      year:  "numeric",
-    }),
+    joinDate: data?.created_at
+      ? new Date(data.created_at).toLocaleDateString("en-US", {
+          month: "short",
+          year:  "numeric",
+        })
+      : "Recently",
     rank:           rankFromLevel(data.level),
     longest_streak: data.longest_streak ?? 0,
     last_active:    lastActive,
