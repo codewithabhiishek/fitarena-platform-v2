@@ -21,6 +21,8 @@ module.exports = withSentryConfig(nextConfig, {
   project: process.env.SENTRY_PROJECT,
   // Suppresses Sentry CLI output during builds — keeps logs clean
   silent: true,
+  // DISABLE source maps upload to massively speed up Vercel builds
+  sourcemaps: { disable: true },
   // Uploads larger portion of client-side source maps for better stack traces
   widenClientFileUpload: true,
   // Hides Sentry's own source maps from the browser bundle
