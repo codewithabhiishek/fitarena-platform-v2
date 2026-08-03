@@ -1,20 +1,7 @@
 // src/services/streakService.js
 // Read-only streak utility functions.
 // This file NEVER writes to the database — all mutations happen server-side
-// via Supabase triggers / RPC functions.
-
-import { supabase } from "../supabase/client";
-
-// ─── RPC ─────────────────────────────────────────────────────────────────────
-
-/**
- * Fetches the full streak status for a user from the DB.
- * @param {string} userId
- * @returns {Promise<{ data: object|null, error: object|null }>}
- */
-export async function getStreakStatus(userId) {
-  return supabase.rpc("get_user_streak_status", { p_user_id: userId });
-}
+// via API route functions.
 
 // ─── HUMAN-READABLE MESSAGE ───────────────────────────────────────────────────
 

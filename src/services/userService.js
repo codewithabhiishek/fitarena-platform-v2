@@ -1,70 +1,42 @@
-// src/services/userService.js
-// ─────────────────────────────────────────────────────────────────────────────
-// Profile read / update / avatar upload / leaderboard.
-// ─────────────────────────────────────────────────────────────────────────────
+import { db, storage } from "../firebase/client";
+import { doc, getDoc, updateDoc, collection, query, orderBy, limit, getDocs, where, getCountFromServer } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
-import { supabase } from "../supabase/client";
-
-// ── Fetch a user's profile by their auth UID ─────────────────────────────────
 export async function getUserProfile(userId) {
-  const { data, error } = await supabase
-    .from("users")
-    .select("*")
-    .eq("id", userId)
-    .single();
-
-  if (error) {
-    console.error("[getUserProfile] Error fetching profile:", error.message);
-    throw error;
+  const docRef = doc(db, "users", userId);
+  const docSnap = await getDoc(docRef);
+  if (!docSnap.exists()) {
+    throw new Error("User profile not found");
   }
-  return data;
+  return docSnap.data();
 }
 
-// ── Update name / gym / avatar_url via SECURITY DEFINER RPC ─────────────────
-// SECURITY: We call the update_user_profile RPC instead of .update() directly.
-// The RPC is SECURITY DEFINER and only touches name/gym/avatar_url — it is
-// impossible for a caller to sneak updates to points, xp, level, or streak
-// through this path, even if they call Supabase directly from the browser.
-export async function updateUserProfile(_userId, updates) {
-  const { error } = await supabase.rpc("update_user_profile", {
-    p_name:       updates.name       ?? null,
-    p_gym:        updates.gym        ?? null,
-    p_avatar_url: updates.avatar_url ?? null,
-  });
-
-  if (error) {
-    console.error("[updateUserProfile] RPC error:", error.message);
-    throw error;
+export async function updateUserProfile(userId, updates) {
+  const docRef = doc(db, "users", userId);
+  const safeUpdates = {};
+  if (updates.name !== undefined) safeUpdates.name = updates.name;
+  if (updates.gym !== undefined) safeUpdates.gym = updates.gym;
+  if (updates.avatar_url !== undefined) safeUpdates.avatar_url = updates.avatar_url;
+  
+  if (Object.keys(safeUpdates).length > 0) {
+    await updateDoc(docRef, safeUpdates);
   }
 }
 
-// ── Upload avatar to Supabase Storage and save the URL on the profile ────────
 export async function uploadAvatar(userId, file) {
   const ext = file.name.split(".").pop();
   const path = `${userId}/avatar.${ext}`;
-
-  const { error: uploadError } = await supabase.storage
-    .from("avatars")
-    .upload(path, file, { upsert: true });
-
-  if (uploadError) throw uploadError;
-
-  const { data } = supabase.storage
-    .from("avatars")
-    .getPublicUrl(path);
-
-  const bustUrl = `${data.publicUrl}?t=${Date.now()}`;
+  const storageRef = ref(storage, path);
+  
+  await uploadBytes(storageRef, file);
+  const downloadUrl = await getDownloadURL(storageRef);
+  
+  const bustUrl = `${downloadUrl}?t=${Date.now()}`;
   await updateUserProfile(userId, { avatar_url: bustUrl });
   return bustUrl;
 }
 
-// ── Fetch the ranked leaderboard ─────────────────────────────────────────────
-// Queries the `leaderboard` view which pre-computes rank positions.
-// Falls back to querying `users` directly if the view is unavailable.
-// Accepts a `period` param ('daily'|'weekly'|'monthly'|'all-time') and
-// filters by `last_active` date accordingly.
-export async function getLeaderboard(limit = 20, period = "all-time") {
-  // last_active is a DATE column, so compare it with an unambiguous UTC date.
+export async function getLeaderboard(limitCount = 20, period = "all-time") {
   let since = null;
   if (period === "daily" || period === "active today") {
     since = new Date().toISOString().slice(0, 10);
@@ -78,66 +50,39 @@ export async function getLeaderboard(limit = 20, period = "all-time") {
     since = d.toISOString().slice(0, 10);
   }
 
-  let query = supabase
-    .from("leaderboard")
-    .select("id, name, gym, points, streak, rank, avatar_url, position, last_active")
-    .order("position", { ascending: true })
-    .limit(limit);
-
+  const usersRef = collection(db, "users");
+  let q;
   if (since) {
-    query = query.gte("last_active", since);
+    q = query(usersRef, where("last_active", ">=", since), orderBy("last_active", "desc"), orderBy("points", "desc"), limit(limitCount));
+  } else {
+    q = query(usersRef, orderBy("points", "desc"), limit(limitCount));
   }
 
-  const { data, error } = await query;
-
-  if (!error && data) return data;
-
-  console.warn("[getLeaderboard] leaderboard view unavailable, falling back to users table:", error?.message);
-
-  // Fallback: query users table directly with manual rank
-  let fallbackQuery = supabase
-    .from("users")
-    .select("id, name, gym, points, streak, rank, avatar_url, last_active")
-    .order("points", { ascending: false })
-    .limit(limit);
+  const querySnapshot = await getDocs(q);
+  const users = [];
+  querySnapshot.forEach((doc) => {
+    users.push(doc.data());
+  });
 
   if (since) {
-    fallbackQuery = fallbackQuery.gte("last_active", since);
-  }
-
-  const { data: users, error: usersError } = await fallbackQuery;
-
-  if (usersError) {
-    console.error("[getLeaderboard] Fallback query failed:", usersError.message);
-    throw usersError;
+    users.sort((a, b) => b.points - a.points);
   }
 
   return users.map((u, i) => ({ ...u, position: i + 1 }));
 }
 
-// ── Fetch a single user's leaderboard position ────────────────────────────────
 export async function getUserRank(userId) {
-  const { data, error } = await supabase
-    .from("leaderboard")
-    .select("position")
-    .eq("id", userId)
-    .single();
+  const user = await getUserProfile(userId).catch(() => null);
+  if (!user) return null;
 
-  if (error) {
-    console.warn("[getUserRank] Could not fetch rank:", error.message);
+  const usersRef = collection(db, "users");
+  const q = query(usersRef, where("points", ">", user.points));
+  
+  try {
+    const snapshot = await getCountFromServer(q);
+    return snapshot.data().count + 1;
+  } catch (error) {
+    console.error("[getUserRank] Error:", error);
     return null;
   }
-  return data?.position ?? null;
 }
-
-// addPointsToUser was removed — DO NOT re-add it.
-//
-// A read-then-write approach (fetch points, add locally, write back)
-// is NOT safe for concurrent updates. Two simultaneous calls would
-// both read the same value and one would silently overwrite the other,
-// losing points with no error or warning.
-//
-// Points are awarded atomically by the on_submission_approved DB trigger
-// (SECURITY DEFINER, runs as postgres, bypasses RLS).
-// The trigger is the ONLY correct place to award points.
-// Never award points from the frontend or from a service function.

@@ -38,28 +38,30 @@ export async function POST(request) {
     );
   }
 
-  if (!ratelimit) {
-    return NextResponse.json(
-      { error: "Rate limiter is not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN." },
-      { status: 500 }
-    );
-  }
-
   const ip = (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
 
-  const { success, limit, remaining, reset } = await ratelimit.limit(ip);
-  if (!success) {
-    return NextResponse.json(
-      { error: "Too many requests. Please wait a moment." },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Limit": String(limit),
-          "X-RateLimit-Remaining": String(remaining),
-          "X-RateLimit-Reset": String(reset),
-        },
-      }
-    );
+  if (process.env.RATE_LIMIT_DISABLED !== "true") {
+    if (!ratelimit) {
+      return NextResponse.json(
+        { error: "Rate limiter is not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN." },
+        { status: 500 }
+      );
+    }
+
+    const { success, limit, remaining, reset } = await ratelimit.limit(ip);
+    if (!success) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait a moment." },
+        {
+          status: 429,
+          headers: {
+            "X-RateLimit-Limit": String(limit),
+            "X-RateLimit-Remaining": String(remaining),
+            "X-RateLimit-Reset": String(reset),
+          },
+        }
+      );
+    }
   }
 
   let body;

@@ -1,26 +1,10 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { adminDb } from "../../../firebase/admin";
+import { auth } from "@clerk/nextjs/server";
 
-const TOKEN_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours — must match generate-qr-token
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/i;
-
-function userClient(jwt) {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co",
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key",
-    { global: { headers: { Authorization: `Bearer ${jwt}` } } }
-  );
-}
-
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co",
-    process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-key",
-    { auth: { persistSession: false, autoRefreshToken: false } }
-  );
-}
 
 function tokenIsValid(challengeId, expiresAt, token) {
   if (!TOKEN_PATTERN.test(token || "")) return false;
@@ -35,10 +19,10 @@ function tokenIsValid(challengeId, expiresAt, token) {
 }
 
 export async function POST(request) {
-  const jwt = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  if (!jwt) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!process.env.UNLOCK_TOKEN_SECRET || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (!process.env.UNLOCK_TOKEN_SECRET) {
     return NextResponse.json({ error: "QR unlocking is not configured." }, { status: 500 });
   }
 
@@ -48,34 +32,27 @@ export async function POST(request) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
-  if (!UUID_PATTERN.test(challengeId || "") || !tokenIsValid(challengeId, expiresAt, token)) {
+  
+  if (!tokenIsValid(challengeId, expiresAt, token)) {
     return NextResponse.json({ error: "Invalid or expired QR code." }, { status: 403 });
   }
 
-  const auth = userClient(jwt);
-  const { data: { user }, error: authError } = await auth.auth.getUser();
-  if (authError || !user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  try {
+    const challengeDoc = await adminDb.collection("challenges").doc(challengeId).get();
+    if (!challengeDoc.exists || !challengeDoc.data().active) {
+      return NextResponse.json({ error: "This challenge is no longer active." }, { status: 410 });
+    }
 
-  const service = serviceClient();
-  const { data: challenge } = await service
-    .from("challenges")
-    .select("id")
-    .eq("id", challengeId)
-    .eq("active", true)
-    .maybeSingle();
-  if (!challenge) {
-    return NextResponse.json({ error: "This challenge is no longer active." }, { status: 410 });
-  }
+    const unlockId = `${userId}_${challengeId}`;
+    await adminDb.collection("unlocked_challenges").doc(unlockId).set({
+      user_id: userId,
+      challenge_id: challengeId,
+      unlocked_at: new Date().toISOString()
+    }, { merge: true });
 
-  const { error } = await service
-    .from("unlocked_challenges")
-    .upsert({ user_id: user.id, challenge_id: challengeId }, { onConflict: "user_id,challenge_id" });
-  if (error) {
-    console.error("[record-unlock] Failed to store unlock:", error.message);
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("[record-unlock] Failed to store unlock:", error);
     return NextResponse.json({ error: "Unable to record unlock." }, { status: 500 });
   }
-
-  return NextResponse.json({ success: true });
 }

@@ -1,17 +1,9 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { adminDb } from "../../../firebase/admin";
+import { auth } from "@clerk/nextjs/server";
 
-const TOKEN_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours — short enough to prevent sharing abuse
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function createUserClient(jwt) {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder-project.supabase.co",
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key",
-    { global: { headers: { Authorization: `Bearer ${jwt}` } } }
-  );
-}
+const TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
 
 function signChallenge(challengeId, expiresAt) {
   return crypto
@@ -21,8 +13,8 @@ function signChallenge(challengeId, expiresAt) {
 }
 
 export async function POST(request) {
-  const jwt = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  if (!jwt) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   if (!process.env.UNLOCK_TOKEN_SECRET) {
     return NextResponse.json({ error: "QR signing is not configured." }, { status: 500 });
@@ -34,32 +26,16 @@ export async function POST(request) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
-  if (!UUID_PATTERN.test(challengeId || "")) {
-    return NextResponse.json({ error: "Invalid challengeId." }, { status: 400 });
-  }
 
-  const supabase = createUserClient(jwt);
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("is_admin")
-    .eq("id", user.id)
-    .single();
-  if (!profile?.is_admin) {
+  const adminRef = adminDb.collection("users").doc(userId);
+  const adminDoc = await adminRef.get();
+  if (!adminDoc.exists || !adminDoc.data().is_admin) {
     return NextResponse.json({ error: "Admin access required." }, { status: 403 });
   }
 
-  const { data: challenge } = await supabase
-    .from("challenges")
-    .select("id")
-    .eq("id", challengeId)
-    .eq("active", true)
-    .maybeSingle();
-  if (!challenge) {
+  const challengeRef = adminDb.collection("challenges").doc(challengeId);
+  const challengeDoc = await challengeRef.get();
+  if (!challengeDoc.exists || !challengeDoc.data().active) {
     return NextResponse.json({ error: "Active challenge not found." }, { status: 404 });
   }
 

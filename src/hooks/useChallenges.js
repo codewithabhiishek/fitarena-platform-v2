@@ -1,16 +1,3 @@
-// src/hooks/useChallenges.js
-// ─────────────────────────────────────────────────────────────────────────────
-// Fetches active challenges and subscribes to real-time updates.
-// Enriches each challenge with real top-score, participant count, and the
-// current user's best approved score.
-//
-// Returns:
-//   challenges — array of enriched challenge rows
-//   loading    — true on initial fetch
-//   error      — error string or null
-//   refetch    — manual refetch trigger
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "./useAuth";
 import {
@@ -20,9 +7,8 @@ import {
   getMyPendingChallengeIds,
   subscribeToChallenges,
 } from "../services/challengeService";
-import { supabase } from "../supabase/client";
+import { subscribeToSubmissions } from "../services/submissionService";
 
-// Icon + color map used when seeding from the DB
 export const CHALLENGE_META = {
   Pushup:     { icon: "💪", color: "#39FF14" },
   Deadlift:   { icon: "🏋️", color: "#00BFFF" },
@@ -41,7 +27,6 @@ export function useChallenges(realtime = false) {
     setLoading(true);
     setError(null);
     try {
-      // Run all three queries in parallel
       const [raw, statsMap, myScores, myPendingIds] = await Promise.all([
         getChallenges(),
         getChallengeStats(),
@@ -56,9 +41,8 @@ export function useChallenges(realtime = false) {
           icon:  ch.icon  || CHALLENGE_META[ch.type]?.icon  || "🏅",
           color: ch.color || CHALLENGE_META[ch.type]?.color || "#39FF14",
           deadline: ch.deadline ? formatDeadline(new Date(ch.deadline)) : "Ongoing",
-          // Real stats from submissions
           myScore:      myScores[ch.id] ?? 0,
-          myPending:    myPendingIds.has(ch.id),   // submitted, awaiting approval
+          myPending:    myPendingIds.has(ch.id),
           topScore:     stats.topScore,
           participants: stats.participants,
         };
@@ -76,34 +60,22 @@ export function useChallenges(realtime = false) {
     fetchChallenges();
 
     let unsubCh = () => {};
-    let subChannel = null;
+    let unsubSub = () => {};
 
     if (realtime) {
-      // Re-fetch when challenges or submissions change
       unsubCh = subscribeToChallenges(() => fetchChallenges());
-
-      subChannel = supabase
-        .channel("submissions-for-challenges")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "submissions" },
-          () => fetchChallenges()
-        )
-        .subscribe();
+      unsubSub = subscribeToSubmissions(() => fetchChallenges());
     }
 
     return () => {
       unsubCh();
-      if (subChannel) {
-        supabase.removeChannel(subChannel);
-      }
+      unsubSub();
     };
   }, [fetchChallenges, realtime]);
 
   return { challenges, loading, error, refetch: fetchChallenges };
 }
 
-// ── Format a deadline Date into a human string ────────────────────────────────
 function formatDeadline(date) {
   const now  = new Date();
   const diff = Math.round((date - now) / (1000 * 60 * 60 * 24));

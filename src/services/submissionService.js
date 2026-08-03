@@ -1,132 +1,110 @@
-// src/services/submissionService.js
-// Score submission + admin approve/reject.
+import { db } from "../firebase/client";
+import { collection, doc, getDoc, getDocs, setDoc, updateDoc, query, where, orderBy, onSnapshot } from "firebase/firestore";
 
-import { supabase } from "../supabase/client";
-
-// Module-level idempotency guard.
-// Tracks submission IDs currently being approved in this JS process.
-// Prevents duplicate calls from double-clicks, realtime echo, or multi-tab.
 const _approvingInFlight = new Set();
-
-// Bug 5 Fix: Same in-flight guard for rejectSubmission — mirrors _approvingInFlight.
-// Without this, two rapid reject clicks fire two concurrent network requests.
 const _rejectingInFlight = new Set();
 
-// Submit a score.
 export async function submitScore({ userId, challengeId, score }) {
-  // Server-side unlock validation: confirm the user actually scanned this challenge
-  const { data: unlock, error: unlockErr } = await supabase
-    .from("unlocked_challenges")
-    .select("challenge_id")
-    .eq("user_id", userId)
-    .eq("challenge_id", challengeId)
-    .maybeSingle();
-
-  if (unlockErr) throw unlockErr;
-  if (!unlock) {
+  const unlockRef = doc(db, "unlocked_challenges", `${userId}_${challengeId}`);
+  const unlockSnap = await getDoc(unlockRef);
+  if (!unlockSnap.exists()) {
     throw new Error("UNLOCK_REQUIRED: You must scan the QR code before submitting.");
   }
 
-  // existing insert logic below, unchanged
-  const { data, error } = await supabase
-    .from("submissions")
-    .insert({
-      user_id:      userId,
-      challenge_id: challengeId,
-      score,
-      status:       "pending",
-    })
-    .select()
-    .single();
-
-  if (error) {
-    if (error.code === "23505") {
-      throw new Error("You've already submitted for this challenge today.");
-    }
-    throw error;
+  const today = new Date().toISOString().slice(0, 10);
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, 
+    where("user_id", "==", userId), 
+    where("challenge_id", "==", challengeId),
+    where("submission_date", "==", today)
+  );
+  
+  const existing = await getDocs(q);
+  if (!existing.empty) {
+    throw new Error("You've already submitted for this challenge today.");
   }
 
-  return data;
+  const newRef = doc(collection(db, "submissions"));
+  const newSubmission = {
+    user_id: userId,
+    challenge_id: challengeId,
+    score,
+    status: "pending",
+    submitted_at: new Date().toISOString(),
+    submission_date: today
+  };
+  await setDoc(newRef, newSubmission);
+  return { id: newRef.id, ...newSubmission };
 }
 
-// Get all submissions for a specific challenge (admin view).
 export async function getSubmissionsForChallenge(challengeId) {
-  const { data, error } = await supabase
-    .from("submissions")
-    .select("*, users(name, avatar_url)")
-    .eq("challenge_id", challengeId)
-    .order("submitted_at", { ascending: false });
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, where("challenge_id", "==", challengeId), orderBy("submitted_at", "desc"));
+  const querySnapshot = await getDocs(q);
+  
+  const data = [];
+  querySnapshot.forEach((doc) => {
+    data.push({ id: doc.id, ...doc.data() });
+  });
 
-  if (error) throw error;
-  return data;
-}
-
-// Get all of the current user's submissions.
-export async function getMySubmissions(userId) {
-  const { data, error } = await supabase
-    .from("submissions")
-    .select("*, challenges(title, type, icon, color, points)")
-    .eq("user_id", userId)
-    .order("submitted_at", { ascending: false });
-
-  if (error) throw error;
-  return data;
-}
-
-// Get pending submissions (admin queue).
-// Explicit column list ensures user_id is always present at the top level
-// so the self-approval filter (s.user_id !== adminId) works correctly.
-export async function getPendingSubmissions() {
-  console.log("[getPendingSubmissions] Fetching pending submissions...");
-
-  const { data, error } = await supabase
-    .from("submissions")
-    .select(
-      "id, user_id, challenge_id, score, status, submitted_at, " +
-      "users(name, avatar_url), " +
-      "challenges(title, type, points)"
-    )
-    .eq("status", "pending")
-    .order("submitted_at", { ascending: true });
-
-  if (error) {
-    console.error("[getPendingSubmissions] Query error:", error.message);
-    throw error;
-  }
-
-  // Detect rows where the challenges join returned null (RLS dropped it)
-  const missingChallenge = (data ?? []).filter(s => !s.challenges);
-
-  if (missingChallenge.length > 0) {
-    console.warn(
-      "[getPendingSubmissions] challenges join dropped",
-      missingChallenge.length,
-      "row(s) — running fallback query for those IDs"
-    );
-
-    // Fallback: fetch challenge data separately for the affected rows
-    const missingIds = [...new Set(missingChallenge.map(s => s.challenge_id))];
-    const { data: fallbackChallenges, error: fbErr } = await supabase
-      .from("challenges")
-      .select("id, title, type, points")
-      .in("id", missingIds);
-
-    if (!fbErr && fallbackChallenges) {
-      const challengeMap = Object.fromEntries(fallbackChallenges.map(c => [c.id, c]));
-      for (const row of missingChallenge) {
-        row.challenges = challengeMap[row.challenge_id] ?? null;
-      }
-    } else {
-      console.error("[getPendingSubmissions] Fallback query also failed:", fbErr?.message);
+  for (const s of data) {
+    const uDoc = await getDoc(doc(db, "users", s.user_id));
+    if (uDoc.exists()) {
+      s.users = { name: uDoc.data().name, avatar_url: uDoc.data().avatar_url };
     }
   }
 
-  console.log("[getPendingSubmissions] Returning", data?.length ?? 0, "rows");
-  return data ?? [];
+  return data;
 }
 
-// Approval and rejection use narrow DB functions. Clients cannot UPDATE a
-// submission row directly or change its user, score, or challenge.
+export async function getMySubmissions(userId) {
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, where("user_id", "==", userId), orderBy("submitted_at", "desc"));
+  const querySnapshot = await getDocs(q);
+  
+  const data = [];
+  querySnapshot.forEach((doc) => {
+    data.push({ id: doc.id, ...doc.data() });
+  });
+
+  for (const s of data) {
+    const cDoc = await getDoc(doc(db, "challenges", s.challenge_id));
+    if (cDoc.exists()) {
+      const c = cDoc.data();
+      s.challenges = { title: c.title, type: c.type, icon: c.icon, color: c.color, points: c.points };
+    }
+  }
+
+  return data;
+}
+
+export async function getPendingSubmissions() {
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, where("status", "==", "pending"), orderBy("submitted_at", "asc"));
+  const querySnapshot = await getDocs(q);
+  
+  const data = [];
+  querySnapshot.forEach((doc) => {
+    data.push({ id: doc.id, ...doc.data() });
+  });
+
+  for (const s of data) {
+    const [uDoc, cDoc] = await Promise.all([
+      getDoc(doc(db, "users", s.user_id)),
+      getDoc(doc(db, "challenges", s.challenge_id))
+    ]);
+    if (uDoc.exists()) {
+      s.users = { name: uDoc.data().name, avatar_url: uDoc.data().avatar_url };
+    }
+    if (cDoc.exists()) {
+      const c = cDoc.data();
+      s.challenges = { title: c.title, type: c.type, points: c.points };
+    }
+  }
+
+  return data;
+}
+
 export async function approveSubmission(submissionId) {
   if (_approvingInFlight.has(submissionId)) {
     throw new Error("DUPLICATE: This submission is already being processed.");
@@ -134,10 +112,13 @@ export async function approveSubmission(submissionId) {
   _approvingInFlight.add(submissionId);
 
   try {
-    const { data, error } = await supabase.rpc("approve_submission", {
-      p_submission_id: submissionId,
+    const res = await fetch("/api/approve-submission", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ submissionId })
     });
-    if (error) throw new Error(error.message);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to approve");
     return data;
   } finally {
     _approvingInFlight.delete(submissionId);
@@ -151,31 +132,23 @@ export async function rejectSubmission(submissionId) {
   _rejectingInFlight.add(submissionId);
 
   try {
-    const { data, error } = await supabase.rpc("reject_submission", {
-      p_submission_id: submissionId,
+    const res = await fetch("/api/reject-submission", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ submissionId })
     });
-    if (error) throw new Error(error.message);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to reject");
     return data;
   } finally {
     _rejectingInFlight.delete(submissionId);
   }
 }
 
-// Real-time: subscribe to submission INSERT and UPDATE events.
 export function subscribeToSubmissions(callback) {
-  const channel = supabase
-    .channel("submissions-realtime")
-    .on(
-      "postgres_changes",
-      { event: "INSERT", schema: "public", table: "submissions" },
-      callback
-    )
-    .on(
-      "postgres_changes",
-      { event: "UPDATE", schema: "public", table: "submissions" },
-      callback
-    )
-    .subscribe();
-
-  return () => supabase.removeChannel(channel);
+  const q = query(collection(db, "submissions"));
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    callback();
+  });
+  return unsubscribe;
 }

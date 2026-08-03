@@ -5,12 +5,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "../supabase/client";
+import { SignIn, SignUp } from "@clerk/nextjs";
 import { useAuth } from "../hooks/useAuth";
 import { useProfile } from "../hooks/useProfile";
 import { useChallenges } from "../hooks/useChallenges";
 import { useLeaderboard } from "../hooks/useLeaderboard";
-import { signUpWithEmail, signInWithEmail, signInWithGoogle } from "../services/authService";
 import { submitScore, getPendingSubmissions, approveSubmission, rejectSubmission } from "../services/submissionService";
 import { createChallenge, deactivateChallenge, updateChallenge } from "../services/challengeService";
 import { updateUserProfile } from "../services/userService";
@@ -293,82 +292,7 @@ function AIQuote({ userName }) {
 
 // ─── AUTH PAGE ───────────────────────────────────────────────────────────────
 function AuthPage() {
-  const posthog = usePostHog();
-  const [mode, setMode]       = useState("login");
-  const [email, setEmail]     = useState("");
-  const [pw, setPw]           = useState("");
-  const [name, setName]       = useState("");
-  const [gym, setGym]         = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState(null);
-  // After email signup, Supabase sends a confirmation email — show a message
-  const [confirmSent, setConfirmSent] = useState(false);
-
-  async function handleEmail() {
-    if (!email || !pw) return;
-    if (mode === "signup" && !name.trim()) {
-      setError("Name is required to sign up.");
-      return;
-    }
-    if (mode === "signup" && pw.length < 6) {
-      setError("Password must be at least 6 characters.");
-      return;
-    }
-    setLoading(true); setError(null);
-    try {
-      if (mode === "signup") {
-        const result = await signUpWithEmail({ email, password:pw, name, gym });
-        // Supabase may require email confirmation depending on project settings.
-        // If the session is null after signup, a confirmation email was sent.
-        if (!result.session) {
-          setConfirmSent(true);
-        } else {
-          posthog?.capture("user_signed_up", { method: "email" });
-        }
-        // If session exists, useAuth's onAuthStateChange fires automatically.
-      } else {
-        await signInWithEmail({ email, password:pw });
-        posthog?.capture("user_signed_in", { method: "email" });
-        // useAuth listener detects the session automatically — no extra work needed
-      }
-    } catch(err) {
-      setError(err.message);
-    } finally {
-      // Bug 3 Fix: always clear loading state, even if an unexpected error escapes.
-      // Previously setLoading(false) was after the try/catch and could be skipped,
-      // permanently freezing the button.
-      setLoading(false);
-    }
-  }
-
-  async function handleGoogle() {
-    setLoading(true); setError(null);
-    try {
-      await signInWithGoogle();
-      posthog?.capture("user_signed_in", { method: "google" });
-    } catch(err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (confirmSent) {
-    return (
-      <div style={{ minHeight:"100vh",background:"#050505",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24 }}>
-        <div style={{ textAlign:"center",maxWidth:380 }}>
-          <div style={{ fontSize:56,marginBottom:16 }}>📧</div>
-          <div style={{ fontSize:24,fontWeight:900,color:"#39FF14",marginBottom:8 }}>Check your email</div>
-          <div style={{ fontSize:14,color:"#888",lineHeight:1.6,marginBottom:24 }}>
-            We sent a confirmation link to <span style={{ color:"#f0f0f0" }}>{email}</span>. Click the link to activate your account and start competing.
-          </div>
-          <button style={{ ...S.ghostBtn,width:"100%" }} onClick={()=>{ setConfirmSent(false); setMode("login"); }}>
-            Back to Sign In
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const [mode, setMode] = useState("login");
 
   return (
     <div style={{ minHeight:"100vh",background:"#050505",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24 }}>
@@ -377,33 +301,15 @@ function AuthPage() {
         <div style={{ fontSize:40,fontWeight:900,color:"#39FF14",letterSpacing:"-0.03em",lineHeight:1 }}>FitArena</div>
         <div style={{ fontSize:13,color:"#555",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.2em",marginTop:6 }}>Elite Gym Challenges</div>
       </div>
-      <div style={{ width:"100%",maxWidth:380 }}>
+      <div style={{ width:"100%",maxWidth:400 }}>
         <div style={{ display:"flex",background:"#0d0d0d",borderRadius:12,padding:4,marginBottom:24 }}>
           {["login","signup"].map(m=>(
-            <button key={m} onClick={()=>{setMode(m);setError(null);setConfirmSent(false);}} style={{ flex:1,padding:"10px",borderRadius:10,border:"none",background:mode===m?"#39FF14":"transparent",color:mode===m?"#000":"#555",fontWeight:800,cursor:"pointer",fontSize:13,textTransform:"capitalize",transition:"all 0.2s" }}>
+            <button key={m} onClick={()=>setMode(m)} style={{ flex:1,padding:"10px",borderRadius:10,border:"none",background:mode===m?"#39FF14":"transparent",color:mode===m?"#000":"#555",fontWeight:800,cursor:"pointer",fontSize:13,textTransform:"capitalize",transition:"all 0.2s" }}>
               {m==="login"?"Sign In":"Sign Up"}
             </button>
           ))}
         </div>
-        {error && <div style={S.errBox}>{error}</div>}
-        <div style={{ display:"flex",flexDirection:"column",gap:12 }}>
-          {mode==="signup" && <input style={S.input} placeholder="Full Name" value={name} onChange={e=>setName(e.target.value)} />}
-          <input style={S.input} placeholder="Email address" type="email" value={email} onChange={e=>setEmail(e.target.value)} />
-          <input style={S.input} placeholder="Password" type="password" value={pw} onChange={e=>setPw(e.target.value)} />
-          {mode==="signup" && <input style={S.input} placeholder="Gym Name (e.g. IronDen Fitness)" value={gym} onChange={e=>setGym(e.target.value)} />}
-          <button style={{ ...S.neonBtn, opacity:loading?0.6:1 }} onClick={handleEmail} disabled={loading}>
-            {loading?"⏳ Please wait...":(mode==="login"?"🚀 Sign In":"⚡ Create Account")}
-          </button>
-          <div style={{ display:"flex",alignItems:"center",gap:12,margin:"4px 0" }}>
-            <div style={{ flex:1,height:1,background:"#1a1a1a" }} />
-            <span style={{ fontSize:12,color:"#444" }}>or</span>
-            <div style={{ flex:1,height:1,background:"#1a1a1a" }} />
-          </div>
-          <button style={{ ...S.ghostBtn,display:"flex",alignItems:"center",justifyContent:"center",gap:8 }} onClick={handleGoogle} disabled={loading}>
-            <span style={{ fontSize:18,fontWeight:900 }}>G</span> Continue with Google
-          </button>
-        </div>
-        <p style={{ textAlign:"center",fontSize:12,color:"#333",marginTop:24 }}>By continuing you agree to FitArena&apos;s Terms & Privacy Policy</p>
+        {mode === "login" ? <SignIn routing="hash" /> : <SignUp routing="hash" />}
       </div>
     </div>
   );
@@ -1624,12 +1530,15 @@ export default function FitArena() {
     }
     // Identify the user in PostHog for session attribution
     posthog?.identify(user.id, { email: user.email });
-    supabase
-      .from("unlocked_challenges")
-      .select("challenge_id")
-      .eq("user_id", user.id)
-      .then(({ data }) => {
-        setUnlockedIds(new Set((data || []).map(row => row.challenge_id)));
+    
+    // Sync user profile
+    fetch('/api/sync-user', { method: 'POST' }).catch(console.error);
+    
+    // Fetch unlocked challenges
+    fetch('/api/unlocked-challenges')
+      .then(r => r.json())
+      .then(data => {
+         if(data.ids) setUnlockedIds(new Set(data.ids));
       })
       .catch(() => setUnlockedIds(new Set()));
   }, [user, posthog]);
@@ -1642,13 +1551,9 @@ export default function FitArena() {
     }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch("/api/record-unlock", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session?.access_token || ""}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ challengeId, expiresAt, token }),
       });
       const json = await res.json();

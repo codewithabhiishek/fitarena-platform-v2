@@ -1,6 +1,7 @@
 import "./globals.css";
 import { Barlow } from "next/font/google";
 import PostHogProvider from "../components/PostHogProvider";
+import { ClerkProvider } from '@clerk/nextjs';
 
 const barlow = Barlow({
   subsets: ["latin"],
@@ -24,10 +25,12 @@ export const viewport = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <body className={barlow.variable}>
-        <PostHogProvider>{children}</PostHogProvider>
-      </body>
-    </html>
+    <ClerkProvider>
+      <html lang="en">
+        <body className={barlow.variable}>
+          <PostHogProvider>{children}</PostHogProvider>
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

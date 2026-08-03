@@ -1,140 +1,110 @@
-// src/services/challengeService.js
-// ─────────────────────────────────────────────────────────────────────────────
-// All challenge-related DB calls. Includes real-time subscription helpers.
-// ─────────────────────────────────────────────────────────────────────────────
+import { db } from "../firebase/client";
+import { collection, doc, getDoc, getDocs, setDoc, updateDoc, query, where, orderBy, onSnapshot } from "firebase/firestore";
 
-import { supabase } from "../supabase/client";
-
-// ── Fetch all active challenges ───────────────────────────────────────────────
 export async function getChallenges() {
-  const { data, error } = await supabase
-    .from("challenges")
-    .select("*")
-    .eq("active", true)
-    .order("created_at", { ascending: false });
-
-  if (error) throw error;
-  return data;
+  const challengesRef = collection(db, "challenges");
+  const q = query(challengesRef, where("active", "==", true), orderBy("created_at", "desc"));
+  const querySnapshot = await getDocs(q);
+  
+  const challenges = [];
+  querySnapshot.forEach((doc) => {
+    challenges.push({ id: doc.id, ...doc.data() });
+  });
+  return challenges;
 }
 
-// ── Fetch a single challenge by ID ───────────────────────────────────────────
 export async function getChallengeById(id) {
-  const { data, error } = await supabase
-    .from("challenges")
-    .select("*")
-    .eq("id", id)
-    .single();
-
-  if (error) throw error;
-  return data;
+  const docRef = doc(db, "challenges", id);
+  const docSnap = await getDoc(docRef);
+  if (!docSnap.exists()) {
+    throw new Error("Challenge not found");
+  }
+  return { id: docSnap.id, ...docSnap.data() };
 }
 
-// ── Fetch stats for all active challenges (top score, participant count) ──────
-// Returns a map of { [challengeId]: { topScore, participants } }
-// Uses the get_challenge_stats() Postgres RPC to aggregate server-side,
-// avoiding a full-table fetch that would download unbounded data on every load.
 export async function getChallengeStats() {
-  const { data, error } = await supabase.rpc("get_challenge_stats");
-  if (error) {
-    console.warn("[ChallengeStats] RPC error:", error.message);
-    return {};
-  }
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, where("status", "==", "approved"));
+  const querySnapshot = await getDocs(q);
+
   const result = {};
-  for (const row of data ?? []) {
-    result[row.challenge_id] = {
-      topScore: row.top_score ?? 0,
-      participants: Number(row.participant_count) ?? 0,
-    };
+  querySnapshot.forEach((doc) => {
+    const row = doc.data();
+    const cid = row.challenge_id;
+    if (!result[cid]) {
+      result[cid] = { topScore: 0, participants: new Set() };
+    }
+    if (row.score > result[cid].topScore) {
+      result[cid].topScore = row.score;
+    }
+    result[cid].participants.add(row.user_id);
+  });
+
+  for (const cid in result) {
+    result[cid].participants = result[cid].participants.size;
   }
+  
   return result;
 }
 
-// ── Fetch the current user's best approved score per challenge ────────────────
-// Returns a map of { [challengeId]: bestScore }
 export async function getMyBestScores(userId) {
   if (!userId) return {};
 
-  const { data, error } = await supabase
-    .from("submissions")
-    .select("challenge_id, score")
-    .eq("user_id", userId)
-    .eq("status", "approved");
-
-  if (error) {
-    console.warn("[MyScores] Could not load scores:", error.message);
-    return {};
-  }
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, where("user_id", "==", userId), where("status", "==", "approved"));
+  const querySnapshot = await getDocs(q);
 
   const best = {};
-  for (const row of data) {
+  querySnapshot.forEach((doc) => {
+    const row = doc.data();
     const cid = row.challenge_id;
     if (!best[cid] || row.score > best[cid]) {
       best[cid] = row.score;
     }
-  }
+  });
   return best;
 }
 
-// ── Create a new challenge (admin only) ──────────────────────────────────────
 export async function createChallenge(userId, challenge) {
-  const { data, error } = await supabase
-    .from("challenges")
-    .insert({ ...challenge, created_by: userId })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+  const newRef = doc(collection(db, "challenges"));
+  const newChallenge = {
+    ...challenge,
+    created_by: userId,
+    created_at: new Date().toISOString(),
+    active: true
+  };
+  await setDoc(newRef, newChallenge);
+  return { id: newRef.id, ...newChallenge };
 }
 
-// ── Update a challenge (admin only) ──────────────────────────────────────────
 export async function updateChallenge(id, updates) {
-  const { data, error } = await supabase
-    .from("challenges")
-    .update(updates)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+  const docRef = doc(db, "challenges", id);
+  await updateDoc(docRef, updates);
+  return { id, ...updates };
 }
 
-// ── Deactivate (soft-delete) a challenge ─────────────────────────────────────
 export async function deactivateChallenge(id) {
   return updateChallenge(id, { active: false });
 }
 
-// ── Real-time: subscribe to changes on the challenges table ──────────────────
-// Returns an unsubscribe function.
 export function subscribeToChallenges(callback) {
-  const channel = supabase
-    .channel("challenges-realtime")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "challenges" },
-      callback
-    )
-    .subscribe();
-
-  return () => supabase.removeChannel(channel);
+  const q = query(collection(db, "challenges"));
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    callback();
+  });
+  return unsubscribe;
 }
 
-// ── Fetch the current user's pending (submitted, awaiting approval) challenge IDs ──
-// Returns a Set of challenge IDs where the user has a pending submission.
 export async function getMyPendingChallengeIds(userId) {
   if (!userId) return new Set();
 
-  const { data, error } = await supabase
-    .from("submissions")
-    .select("challenge_id")
-    .eq("user_id", userId)
-    .eq("status", "pending");
+  const submissionsRef = collection(db, "submissions");
+  const q = query(submissionsRef, where("user_id", "==", userId), where("status", "==", "pending"));
+  const querySnapshot = await getDocs(q);
 
-  if (error) {
-    console.warn("[MyPending] Could not load pending submissions:", error.message);
-    return new Set();
-  }
-
-  return new Set(data.map(r => r.challenge_id));
+  const pending = new Set();
+  querySnapshot.forEach((doc) => {
+    pending.add(doc.data().challenge_id);
+  });
+  return pending;
 }
