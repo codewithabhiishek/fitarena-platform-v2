@@ -29,19 +29,25 @@ export default function RootLayout({ children }) {
         baseTheme: dark,
         variables: {
           colorPrimary: '#39FF14',
-          colorBackground: '#0a0a0a',
-          colorInputBackground: '#1a1a1a',
+          colorBackground: '#121212',
+          colorInputBackground: '#1e1e1e',
+          colorInputText: '#ffffff',
           colorText: '#ffffff',
           colorTextOnPrimaryBackground: '#000000',
+          colorTextSecondary: '#a1a1aa',
         },
         elements: {
-          card: 'bg-black border border-[#39FF14]/20 shadow-[0_0_15px_rgba(57,255,20,0.1)]',
+          card: 'bg-[#121212] border border-zinc-800 shadow-2xl',
           headerTitle: 'text-[#39FF14]',
           headerSubtitle: 'text-zinc-400',
-          socialButtonsBlockButton: 'border-[#39FF14]/20 hover:bg-[#39FF14]/10 hover:border-[#39FF14]',
-          socialButtonsBlockButtonText: 'font-semibold',
-          formButtonPrimary: 'font-bold tracking-wide uppercase',
-          footerActionLink: 'text-[#39FF14] hover:text-[#39FF14]/80',
+          socialButtonsBlockButton: 'bg-[#1e1e1e] border border-zinc-800 hover:bg-zinc-800 transition-colors text-white',
+          socialButtonsBlockButtonText: 'text-white font-semibold',
+          formFieldLabel: 'text-zinc-300 font-medium',
+          formFieldInput: 'bg-[#1e1e1e] border border-zinc-700 text-white focus:border-[#39FF14] focus:ring-[#39FF14]/20',
+          formButtonPrimary: 'bg-[#39FF14] text-black font-bold tracking-wide uppercase hover:bg-[#32e011]',
+          footerActionLink: 'text-[#39FF14] hover:text-[#32e011]',
+          dividerLine: 'bg-zinc-800',
+          dividerText: 'text-zinc-500',
         }
       }}
     >
