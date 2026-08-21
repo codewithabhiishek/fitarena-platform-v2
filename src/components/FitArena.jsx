@@ -15,6 +15,7 @@ import { createChallenge, deactivateChallenge, updateChallenge } from "../servic
 import { updateUserProfile } from "../services/userService";
 import { QRCodeSVG } from "qrcode.react";
 import { usePostHog } from "posthog-js/react";
+import LandingPage from "./LandingPage";
 
 // ─── STATIC DATA ─────────────────────────────────────────────────────────────
 // BADGES and REWARDS remain static (cosmetic/store data, not from DB yet)
@@ -291,12 +292,20 @@ function AIQuote({ userName }) {
 }
 
 // ─── AUTH PAGE ───────────────────────────────────────────────────────────────
-function AuthPage() {
-  const [mode, setMode] = useState("login");
+function AuthPage({ initialMode = "login", onBack }) {
+  const [mode, setMode] = useState(initialMode);
 
   return (
-    <div style={{ minHeight:"100vh",background:"#050505",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24 }}>
-      <div style={{ textAlign:"center",marginBottom:40 }}>
+    <div style={{ minHeight:"100vh",background:"#050505",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,position:"relative" }}>
+      {onBack && (
+        <button
+          onClick={onBack}
+          style={{ position:"absolute",top:24,left:24,background:"none",border:"none",color:"#888",cursor:"pointer",fontSize:13,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",display:"flex",alignItems:"center",gap:6 }}
+        >
+          ← Back to Overview
+        </button>
+      )}
+      <div style={{ textAlign:"center",marginBottom:32 }}>
         <div style={{ fontSize:56,marginBottom:8 }}>⚡</div>
         <div style={{ fontSize:40,fontWeight:900,color:"#39FF14",letterSpacing:"-0.03em",lineHeight:1 }}>FitArena</div>
         <div style={{ fontSize:13,color:"#555",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.2em",marginTop:6 }}>Elite Gym Challenges</div>
@@ -1513,6 +1522,7 @@ export default function FitArena() {
   const [page, setPage]                   = useState("home");
   const [selectedChallenge, setChallenge] = useState(null);
   const [prevPage, setPrevPage]           = useState("challenges");
+  const [authMode, setAuthMode]           = useState(null);
 
   // ── Unlocked challenges verified and persisted by the server ────────────────
   // A challenge is "unlocked" when the user scans its QR code.
@@ -1600,11 +1610,16 @@ export default function FitArena() {
   if (authLoading) return <Spinner />;
 
   // ── Not signed in ─────────────────────────────────────────────────────────
-  if (!user) return (
-    <div style={S.app}>
-      <AuthPage />
-    </div>
-  );
+  if (!user) {
+    if (authMode) {
+      return (
+        <div style={S.app}>
+          <AuthPage initialMode={authMode} onBack={() => setAuthMode(null)} />
+        </div>
+      );
+    }
+    return <LandingPage onEnterAuth={(mode) => setAuthMode(mode)} />;
+  }
 
   // ── Profile loading (first load only) ────────────────────────────────────
   // Only block render if profile has never loaded. Subsequent refetches
